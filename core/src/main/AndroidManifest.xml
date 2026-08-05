@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!--
+      No general INTERNET permission here: the beacon/watch/alarm loop has zero network
+      dependency (non-negotiable #1). Location/notifications/battery-exemption permissions come
+      from the :reliability module dependency's own manifest. BLE and foreground-service-type
+      permissions below are specific to this app and not part of that shared module, since no
+      prior portfolio app used BLE peripheral/central mode.
+    -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="31" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+
+    <application>
+        <service
+            android:name="com.trozovka.pocketmobalert.core.beacon.MobAlertBeaconService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <service
+            android:name="com.trozovka.pocketmobalert.core.watch.MobAlertWatchService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice|location" />
+    </application>
+</manifest>
