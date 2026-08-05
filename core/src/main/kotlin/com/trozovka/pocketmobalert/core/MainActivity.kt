@@ -25,15 +25,20 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.trozovka.pocketmobalert.core.beacon.MobAlertBeaconService
 import com.trozovka.pocketmobalert.core.ble.BlePermissionFlow
+import com.trozovka.pocketmobalert.core.data.AlertLogEntity
+import com.trozovka.pocketmobalert.core.data.PocketMobAlertDatabase
 import com.trozovka.pocketmobalert.core.entitlement.EntitlementManager
 import com.trozovka.pocketmobalert.core.entitlement.EntitlementManagerHolder
 import com.trozovka.pocketmobalert.core.watch.DeviceAlarmState
 import com.trozovka.pocketmobalert.core.watch.MobAlertWatchService
 import com.trozovka.pocketmobalert.core.watch.PairedCrewStore
 import com.trozovka.toolkit.reliability.LocationReliabilityPermissionFlow
+import java.text.DateFormat
+import java.util.Date
 
 class MainActivity : ComponentActivity() {
 
@@ -80,6 +85,12 @@ class MainActivity : ComponentActivity() {
                                         .putExtra(MobAlertWatchService.EXTRA_DEVICE_ID, deviceId),
                                 )
                             },
+                            onAcknowledgeRelay = {
+                                startService(
+                                    Intent(this@MainActivity, MobAlertWatchService::class.java)
+                                        .setAction(MobAlertWatchService.ACTION_ACKNOWLEDGE_RELAY),
+                                )
+                            },
                             pairedCrewStore = pairedCrewStore,
                             entitlementManager = entitlementManager,
                         )
@@ -97,6 +108,7 @@ private fun AppTabs(
     onStartWatchMode: () -> Unit,
     onStopWatchMode: () -> Unit,
     onAcknowledge: (String) -> Unit,
+    onAcknowledgeRelay: () -> Unit,
     pairedCrewStore: PairedCrewStore,
     entitlementManager: EntitlementManager,
 ) {
@@ -109,7 +121,10 @@ private fun AppTabs(
         }
         when (selectedTab) {
             0 -> CrewModeScreen(onStartCrewMode, onStopCrewMode)
-            1 -> WatchModeScreen(onStartWatchMode, onStopWatchMode, onAcknowledge, pairedCrewStore, entitlementManager)
+            1 -> WatchModeScreen(
+                onStartWatchMode, onStopWatchMode, onAcknowledge, onAcknowledgeRelay,
+                pairedCrewStore, entitlementManager,
+            )
         }
     }
 }
@@ -135,20 +150,29 @@ private fun WatchModeScreen(
     onStartWatchMode: () -> Unit,
     onStopWatchMode: () -> Unit,
     onAcknowledge: (String) -> Unit,
+    onAcknowledgeRelay: () -> Unit,
     pairedCrewStore: PairedCrewStore,
     entitlementManager: EntitlementManager,
 ) {
     val sightings by MobAlertWatchService.sightings.collectAsState()
     val alarmStates by MobAlertWatchService.alarmStates.collectAsState()
+    val relayedAlertActive by MobAlertWatchService.relayedAlertActive.collectAsState()
     val scanError by MobAlertWatchService.scanError.collectAsState()
 
     // alarmStates ticks every ~1s while Watch mode runs, which doubles as this screen's refresh
-    // cadence for the paired list (SharedPreferences-backed, not itself a reactive flow).
+    // cadence for the paired list (SharedPreferences-backed, not itself a reactive flow) and the
+    // alert log (Room, not a reactive flow either).
     var pairedDevices by remember { mutableStateOf(pairedCrewStore.getAll()) }
     var maxCrewDevices by remember { mutableStateOf<Int?>(null) }
+    var historyUnlocked by remember { mutableStateOf(false) }
+    var alertLog by remember { mutableStateOf<List<AlertLogEntity>>(emptyList()) }
+    val context = LocalContext.current
     LaunchedEffect(alarmStates) {
         pairedDevices = pairedCrewStore.getAll()
         maxCrewDevices = entitlementManager.maxPairedCrewDevices()
+        historyUnlocked = entitlementManager.isHistoryAndExportUnlocked()
+        val dao = PocketMobAlertDatabase.getInstance(context).alertLogDao()
+        alertLog = if (historyUnlocked) dao.getAll() else listOfNotNull(dao.getMostRecent())
     }
 
     val pairedIds = pairedDevices.map { it.deviceIdHex }.toSet()
@@ -159,6 +183,11 @@ private fun WatchModeScreen(
         Button(onClick = onStartWatchMode) { Text("Start Watch Mode") }
         Button(onClick = onStopWatchMode) { Text("Stop Watch Mode") }
         scanError?.let { Text("Error: $it") }
+
+        if (relayedAlertActive) {
+            Text("ALARM relayed from another Watch device -- a paired crew member may be overboard.")
+            Button(onClick = onAcknowledgeRelay) { Text("Acknowledge Relayed Alarm") }
+        }
 
         Text("Paired crew (${pairedDevices.size}${maxCrewDevices?.let { "/$it" } ?: ""}):")
         LazyColumn {
@@ -192,6 +221,19 @@ private fun WatchModeScreen(
                         },
                     ) { Text("Add Crew") }
                 }
+            }
+        }
+
+        Text(if (historyUnlocked) "Alert log:" else "Most recent alert (Pro unlocks full history):")
+        LazyColumn {
+            items(alertLog) { entry ->
+                val timestamp = DateFormat.getDateTimeInstance().format(Date(entry.timestampMillis))
+                val position = if (entry.latitude != null && entry.longitude != null) {
+                    "%.5f, %.5f".format(entry.latitude, entry.longitude)
+                } else {
+                    "position unavailable"
+                }
+                Text("${entry.crewLabel} -- $timestamp -- $position")
             }
         }
     }

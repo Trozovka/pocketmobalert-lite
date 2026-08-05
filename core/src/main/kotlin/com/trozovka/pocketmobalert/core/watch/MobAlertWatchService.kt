@@ -5,6 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.bluetooth.BluetoothManager
+import android.bluetooth.le.AdvertiseCallback
+import android.bluetooth.le.AdvertiseData
+import android.bluetooth.le.AdvertiseSettings
+import android.bluetooth.le.BluetoothLeAdvertiser
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
@@ -20,6 +24,9 @@ import androidx.core.app.NotificationCompat
 import com.trozovka.pocketmobalert.core.R
 import com.trozovka.pocketmobalert.core.ble.BleConstants
 import com.trozovka.pocketmobalert.core.ble.BlePermissions
+import com.trozovka.pocketmobalert.core.ble.CrewDeviceIdentity
+import com.trozovka.pocketmobalert.core.data.AlertLogEntity
+import com.trozovka.pocketmobalert.core.data.PocketMobAlertDatabase
 import com.trozovka.toolkit.reliability.WakeLockController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,11 +44,20 @@ data class CrewSighting(val deviceIdHex: String, val rssi: Int, val lastSeenMill
 
 /**
  * Watch mode: scans continuously for any Crew-mode beacon (paired or not -- pairing UI reads
- * [sightings] to offer unpaired ones as "add crew" candidates), and separately evaluates each
- * currently-paired device's [DeviceAlarmState] via [SeparationMonitor] every second.
+ * [sightings] to offer unpaired ones as "add crew" candidates), evaluates each currently-paired
+ * device's [DeviceAlarmState] via [SeparationMonitor] every second, and owns the full alarm
+ * behavior once a real separation is confirmed:
  *
- * No network involved anywhere in this class (non-negotiable #1) -- detection is pure local BLE
- * scanning, no internet needed or used.
+ * - Sounds + vibrates at max volume on this device ([AlarmSoundController]).
+ * - Relays the alarm to every other paired Watch device on the boat by advertising
+ *   [BleConstants.WATCH_ALERT_SERVICE_UUID] (non-negotiable #3 -- no single point of failure).
+ *   A device relays only its own direct detections, never something it merely heard from another
+ *   Watch device (single-hop broadcast, not a multi-hop mesh).
+ * - Captures a last-known GPS position and logs the event locally the moment a device first
+ *   enters Alarming (edge-triggered, not once per evaluation tick).
+ *
+ * No network involved anywhere in this class (non-negotiable #1) -- detection and alerting are
+ * pure local BLE, no internet needed or used.
  */
 class MobAlertWatchService : Service() {
 
@@ -49,17 +65,36 @@ class MobAlertWatchService : Service() {
     private var evaluationJob: Job? = null
     private lateinit var wakeLock: WakeLockController
     private lateinit var pairedCrewStore: PairedCrewStore
+    private lateinit var alarmSound: AlarmSoundController
+    private lateinit var ownDeviceIdHex: String
     private var scanner: BluetoothLeScanner? = null
+    private var relayAdvertiser: BluetoothLeAdvertiser? = null
+    private var isRelayAdvertising = false
 
     private val separationMonitor = SeparationMonitor()
     private val lastSeenMillis = mutableMapOf<String, Long>()
+    private val loggedDeviceIds = mutableSetOf<String>()
+
+    @Volatile
+    private var relayedAlertLatched = false
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val deviceId = extractDeviceIdHex(result) ?: return
+            val record = result.scanRecord ?: return
             val now = System.currentTimeMillis()
-            lastSeenMillis[deviceId] = now
-            _sightings.value = _sightings.value + (deviceId to CrewSighting(deviceId, result.rssi, now))
+
+            record.getServiceData(ParcelUuid(BleConstants.CREW_SERVICE_UUID))?.let { data ->
+                val deviceId = data.joinToString("") { "%02x".format(it) }
+                lastSeenMillis[deviceId] = now
+                _sightings.value = _sightings.value + (deviceId to CrewSighting(deviceId, result.rssi, now))
+            }
+
+            record.getServiceData(ParcelUuid(BleConstants.WATCH_ALERT_SERVICE_UUID))?.let { data ->
+                val sourceId = data.joinToString("") { "%02x".format(it) }
+                if (sourceId != ownDeviceIdHex) {
+                    relayedAlertLatched = true
+                }
+            }
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -68,16 +103,33 @@ class MobAlertWatchService : Service() {
         }
     }
 
+    private val relayAdvertiseCallback = object : AdvertiseCallback() {
+        override fun onStartFailure(errorCode: Int) {
+            // Graceful degradation (non-negotiable #2): this device just can't relay outward --
+            // it still sounds its own alarm locally and can still receive relays from others.
+            Log.w(TAG, "Watch-alert relay advertising failed to start, errorCode=$errorCode")
+            isRelayAdvertising = false
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         wakeLock = WakeLockController(applicationContext, "$packageName:WatchWakeLock")
         pairedCrewStore = PairedCrewStore(applicationContext)
+        alarmSound = AlarmSoundController(applicationContext)
+        ownDeviceIdHex = CrewDeviceIdentity.getOrCreateHex(applicationContext)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_ACKNOWLEDGE) {
-            intent.getStringExtra(EXTRA_DEVICE_ID)?.let { separationMonitor.acknowledge(it) }
-            return START_STICKY
+        when (intent?.action) {
+            ACTION_ACKNOWLEDGE -> {
+                intent.getStringExtra(EXTRA_DEVICE_ID)?.let { separationMonitor.acknowledge(it) }
+                return START_STICKY
+            }
+            ACTION_ACKNOWLEDGE_RELAY -> {
+                relayedAlertLatched = false
+                return START_STICKY
+            }
         }
         startForegroundWithNotification()
         startScanning()
@@ -100,6 +152,7 @@ class MobAlertWatchService : Service() {
         }
 
         scanner = adapter.bluetoothLeScanner
+        relayAdvertiser = if (adapter.isMultipleAdvertisementSupported) adapter.bluetoothLeAdvertiser else null
         if (scanner == null) {
             _scanError.value = "Bluetooth scanner unavailable"
             stopSelf()
@@ -108,15 +161,16 @@ class MobAlertWatchService : Service() {
 
         wakeLock.acquire()
 
-        val filter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(BleConstants.CREW_SERVICE_UUID))
-            .build()
+        val filters = listOf(
+            ScanFilter.Builder().setServiceUuid(ParcelUuid(BleConstants.CREW_SERVICE_UUID)).build(),
+            ScanFilter.Builder().setServiceUuid(ParcelUuid(BleConstants.WATCH_ALERT_SERVICE_UUID)).build(),
+        )
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
 
         try {
-            scanner?.startScan(listOf(filter), settings, scanCallback)
+            scanner?.startScan(filters, settings, scanCallback)
         } catch (e: SecurityException) {
             Log.e(TAG, "Missing runtime permission for startScan", e)
             _scanError.value = "Bluetooth permission not granted"
@@ -128,10 +182,74 @@ class MobAlertWatchService : Service() {
     private fun startEvaluationLoop() {
         evaluationJob = scope.launch {
             while (isActive) {
-                val pairedIds = pairedCrewStore.getAll().map { it.deviceIdHex }.toSet()
-                _alarmStates.value = separationMonitor.evaluate(pairedIds, lastSeenMillis)
+                val pairedDevices = pairedCrewStore.getAll()
+                val pairedIds = pairedDevices.map { it.deviceIdHex }.toSet()
+                val newStates = separationMonitor.evaluate(pairedIds, lastSeenMillis)
+                _alarmStates.value = newStates
+
+                for (device in pairedDevices) {
+                    if (newStates[device.deviceIdHex] == DeviceAlarmState.Alarming &&
+                        device.deviceIdHex !in loggedDeviceIds
+                    ) {
+                        loggedDeviceIds += device.deviceIdHex
+                        logAlarm(device.deviceIdHex, device.label)
+                    }
+                }
+
+                val hasDirectAlarm = newStates.values.any { it == DeviceAlarmState.Alarming }
+                updateRelayAdvertising(active = hasDirectAlarm)
+
+                _relayedAlertActive.value = relayedAlertLatched
+                if (hasDirectAlarm || relayedAlertLatched) alarmSound.start() else alarmSound.stop()
+
                 delay(EVALUATION_INTERVAL_MILLIS)
             }
+        }
+    }
+
+    private suspend fun logAlarm(deviceIdHex: String, label: String) {
+        val position = captureLastKnownLocation(applicationContext)
+        val dao = PocketMobAlertDatabase.getInstance(applicationContext).alertLogDao()
+        dao.insert(
+            AlertLogEntity(
+                crewDeviceIdHex = deviceIdHex,
+                crewLabel = label,
+                timestampMillis = System.currentTimeMillis(),
+                latitude = position?.first,
+                longitude = position?.second,
+            ),
+        )
+    }
+
+    private fun updateRelayAdvertising(active: Boolean) {
+        if (active == isRelayAdvertising) return
+        val advertiser = relayAdvertiser ?: return
+        if (!BlePermissions.hasAdvertisePermission(this) || !BlePermissions.hasConnectPermission(this)) return
+
+        try {
+            if (active) {
+                val settings = AdvertiseSettings.Builder()
+                    .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+                    .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+                    .setConnectable(true)
+                    .build()
+                val data = AdvertiseData.Builder().setIncludeDeviceName(false)
+                    .addServiceUuid(ParcelUuid(BleConstants.WATCH_ALERT_SERVICE_UUID))
+                    .build()
+                val ownIdBytes = ByteArray(ownDeviceIdHex.length / 2) { i ->
+                    ownDeviceIdHex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
+                }
+                val scanResponse = AdvertiseData.Builder().setIncludeDeviceName(false)
+                    .addServiceData(ParcelUuid(BleConstants.WATCH_ALERT_SERVICE_UUID), ownIdBytes)
+                    .build()
+                advertiser.startAdvertising(settings, data, scanResponse, relayAdvertiseCallback)
+                isRelayAdvertising = true
+            } else {
+                advertiser.stopAdvertising(relayAdvertiseCallback)
+                isRelayAdvertising = false
+            }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Missing runtime permission for relay advertising", e)
         }
     }
 
@@ -140,29 +258,32 @@ class MobAlertWatchService : Service() {
             if (BlePermissions.hasScanPermission(this)) {
                 scanner?.stopScan(scanCallback)
             }
+            if (isRelayAdvertising && BlePermissions.hasAdvertisePermission(this)) {
+                relayAdvertiser?.stopAdvertising(relayAdvertiseCallback)
+            }
         } catch (e: SecurityException) {
-            Log.e(TAG, "Missing runtime permission for stopScan", e)
+            Log.e(TAG, "Missing runtime permission for stopScan/stopAdvertising", e)
         }
         scanner = null
+        relayAdvertiser = null
+        isRelayAdvertising = false
     }
 
     override fun onDestroy() {
         evaluationJob?.cancel()
         scope.cancel()
         stopScanning()
+        alarmSound.stop()
         wakeLock.release()
+        loggedDeviceIds.clear()
+        relayedAlertLatched = false
         _sightings.value = emptyMap()
         _alarmStates.value = emptyMap()
+        _relayedAlertActive.value = false
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
-
-    private fun extractDeviceIdHex(result: ScanResult): String? {
-        val serviceData = result.scanRecord?.getServiceData(ParcelUuid(BleConstants.CREW_SERVICE_UUID))
-            ?: return null
-        return serviceData.joinToString("") { "%02x".format(it) }
-    }
 
     private fun startForegroundWithNotification() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -206,6 +327,7 @@ class MobAlertWatchService : Service() {
         private const val NOTIFICATION_ID = 3
         private const val EVALUATION_INTERVAL_MILLIS = 1_000L
         const val ACTION_ACKNOWLEDGE = "com.trozovka.pocketmobalert.core.action.ACKNOWLEDGE"
+        const val ACTION_ACKNOWLEDGE_RELAY = "com.trozovka.pocketmobalert.core.action.ACKNOWLEDGE_RELAY"
         const val EXTRA_DEVICE_ID = "extra_device_id"
 
         /** Every Crew-mode beacon seen this session, paired or not -- the pairing UI offers
@@ -215,6 +337,11 @@ class MobAlertWatchService : Service() {
 
         private val _alarmStates = MutableStateFlow<Map<String, DeviceAlarmState>>(emptyMap())
         val alarmStates: StateFlow<Map<String, DeviceAlarmState>> = _alarmStates.asStateFlow()
+
+        /** True if this device is currently sounding because of an alert relayed from another
+         * Watch device (not its own direct detection). Separately acknowledgeable. */
+        private val _relayedAlertActive = MutableStateFlow(false)
+        val relayedAlertActive: StateFlow<Boolean> = _relayedAlertActive.asStateFlow()
 
         private val _scanError = MutableStateFlow<String?>(null)
         val scanError: StateFlow<String?> = _scanError.asStateFlow()
