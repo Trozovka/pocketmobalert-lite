@@ -8,34 +8,45 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.trozovka.pocketmobalert.core.beacon.MobAlertBeaconService
 import com.trozovka.pocketmobalert.core.ble.BlePermissionFlow
+import com.trozovka.pocketmobalert.core.entitlement.EntitlementManager
+import com.trozovka.pocketmobalert.core.entitlement.EntitlementManagerHolder
+import com.trozovka.pocketmobalert.core.watch.DeviceAlarmState
+import com.trozovka.pocketmobalert.core.watch.MobAlertWatchService
+import com.trozovka.pocketmobalert.core.watch.PairedCrewStore
 import com.trozovka.toolkit.reliability.LocationReliabilityPermissionFlow
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var blePermissionFlow: BlePermissionFlow
     private lateinit var locationPermissionFlow: LocationReliabilityPermissionFlow
+    private var pendingServiceToStart: (() -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         locationPermissionFlow = LocationReliabilityPermissionFlow(
             activity = this,
-            onReady = { startService(Intent(this, MobAlertBeaconService::class.java)) },
+            onReady = { pendingServiceToStart?.invoke() },
             onDenied = { },
         )
         blePermissionFlow = BlePermissionFlow(
@@ -44,19 +55,33 @@ class MainActivity : ComponentActivity() {
             onDenied = { },
         )
 
+        val entitlementManager = (application as EntitlementManagerHolder).entitlementManager
+        val pairedCrewStore = PairedCrewStore(applicationContext)
+
         setContent {
             MaterialTheme {
                 Scaffold { padding ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(padding)
-                            .padding(24.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
-                    ) {
-                        HomeScreen(
-                            onStartCrewMode = { blePermissionFlow.begin() },
+                    Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+                        AppTabs(
+                            onStartCrewMode = {
+                                pendingServiceToStart = { startService(Intent(this@MainActivity, MobAlertBeaconService::class.java)) }
+                                blePermissionFlow.begin()
+                            },
                             onStopCrewMode = { stopService(Intent(this@MainActivity, MobAlertBeaconService::class.java)) },
+                            onStartWatchMode = {
+                                pendingServiceToStart = { startService(Intent(this@MainActivity, MobAlertWatchService::class.java)) }
+                                blePermissionFlow.begin()
+                            },
+                            onStopWatchMode = { stopService(Intent(this@MainActivity, MobAlertWatchService::class.java)) },
+                            onAcknowledge = { deviceId ->
+                                startService(
+                                    Intent(this@MainActivity, MobAlertWatchService::class.java)
+                                        .setAction(MobAlertWatchService.ACTION_ACKNOWLEDGE)
+                                        .putExtra(MobAlertWatchService.EXTRA_DEVICE_ID, deviceId),
+                                )
+                            },
+                            pairedCrewStore = pairedCrewStore,
+                            entitlementManager = entitlementManager,
                         )
                     }
                 }
@@ -66,25 +91,129 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun HomeScreen(onStartCrewMode: () -> Unit, onStopCrewMode: () -> Unit) {
-    var running by remember { mutableStateOf(false) }
+private fun AppTabs(
+    onStartCrewMode: () -> Unit,
+    onStopCrewMode: () -> Unit,
+    onStartWatchMode: () -> Unit,
+    onStopWatchMode: () -> Unit,
+    onAcknowledge: (String) -> Unit,
+    pairedCrewStore: PairedCrewStore,
+    entitlementManager: EntitlementManager,
+) {
+    var selectedTab by remember { mutableIntStateOf(0) }
+
+    Column {
+        TabRow(selectedTabIndex = selectedTab) {
+            Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }, text = { Text("Crew Mode") })
+            Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }, text = { Text("Watch Mode") })
+        }
+        when (selectedTab) {
+            0 -> CrewModeScreen(onStartCrewMode, onStopCrewMode)
+            1 -> WatchModeScreen(onStartWatchMode, onStopWatchMode, onAcknowledge, pairedCrewStore, entitlementManager)
+        }
+    }
+}
+
+@Composable
+private fun CrewModeScreen(onStartCrewMode: () -> Unit, onStopCrewMode: () -> Unit) {
     val status by MobAlertBeaconService.status.collectAsState()
     val deviceId by MobAlertBeaconService.deviceIdHex.collectAsState()
 
-    Text("PocketMOBAlert")
-    Text("Crew mode: $status")
-    deviceId?.let { Text("Device ID: $it") }
-
-    Button(onClick = {
-        running = true
-        onStartCrewMode()
-    }) {
-        Text("Start Crew Mode")
+    Column(
+        modifier = Modifier.fillMaxSize().padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Text("Crew mode: $status")
+        deviceId?.let { Text("Device ID: $it") }
+        Button(onClick = onStartCrewMode) { Text("Start Crew Mode") }
+        Button(onClick = onStopCrewMode) { Text("Stop Crew Mode") }
     }
-    Button(onClick = {
-        running = false
-        onStopCrewMode()
-    }) {
-        Text("Stop Crew Mode")
+}
+
+@Composable
+private fun WatchModeScreen(
+    onStartWatchMode: () -> Unit,
+    onStopWatchMode: () -> Unit,
+    onAcknowledge: (String) -> Unit,
+    pairedCrewStore: PairedCrewStore,
+    entitlementManager: EntitlementManager,
+) {
+    val sightings by MobAlertWatchService.sightings.collectAsState()
+    val alarmStates by MobAlertWatchService.alarmStates.collectAsState()
+    val scanError by MobAlertWatchService.scanError.collectAsState()
+
+    // alarmStates ticks every ~1s while Watch mode runs, which doubles as this screen's refresh
+    // cadence for the paired list (SharedPreferences-backed, not itself a reactive flow).
+    var pairedDevices by remember { mutableStateOf(pairedCrewStore.getAll()) }
+    var maxCrewDevices by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(alarmStates) {
+        pairedDevices = pairedCrewStore.getAll()
+        maxCrewDevices = entitlementManager.maxPairedCrewDevices()
+    }
+
+    val pairedIds = pairedDevices.map { it.deviceIdHex }.toSet()
+    val unpairedSightings = sightings.filterKeys { it !in pairedIds }
+    val atCapacity = maxCrewDevices?.let { pairedDevices.size >= it } ?: false
+
+    Column(modifier = Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Button(onClick = onStartWatchMode) { Text("Start Watch Mode") }
+        Button(onClick = onStopWatchMode) { Text("Stop Watch Mode") }
+        scanError?.let { Text("Error: $it") }
+
+        Text("Paired crew (${pairedDevices.size}${maxCrewDevices?.let { "/$it" } ?: ""}):")
+        LazyColumn {
+            items(pairedDevices) { device ->
+                val state = alarmStates[device.deviceIdHex] ?: DeviceAlarmState.Present
+                PairedDeviceRow(
+                    label = device.label,
+                    state = state,
+                    onRemove = {
+                        pairedCrewStore.remove(device.deviceIdHex)
+                        pairedDevices = pairedCrewStore.getAll()
+                    },
+                    onAcknowledge = { onAcknowledge(device.deviceIdHex) },
+                )
+            }
+        }
+
+        Text("Nearby crew beacons not yet paired:")
+        if (atCapacity) {
+            Text("Free tier limit reached (${maxCrewDevices} paired devices) -- Pro removes this cap.")
+        }
+        LazyColumn {
+            items(unpairedSightings.values.toList()) { sighting ->
+                Column {
+                    Text("${sighting.deviceIdHex}  (${sighting.rssi} dBm)")
+                    Button(
+                        enabled = !atCapacity,
+                        onClick = {
+                            pairedCrewStore.add(sighting.deviceIdHex, "Crew ${pairedDevices.size + 1}")
+                            pairedDevices = pairedCrewStore.getAll()
+                        },
+                    ) { Text("Add Crew") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PairedDeviceRow(
+    label: String,
+    state: DeviceAlarmState,
+    onRemove: () -> Unit,
+    onAcknowledge: () -> Unit,
+) {
+    Column {
+        val stateText = when (state) {
+            DeviceAlarmState.Present -> "Present"
+            DeviceAlarmState.PossibleSeparation -> "Possible separation -- confirming..."
+            DeviceAlarmState.Alarming -> "ALARM -- crew member may be overboard"
+        }
+        Text("$label: $stateText")
+        if (state == DeviceAlarmState.Alarming) {
+            Button(onClick = onAcknowledge) { Text("Acknowledge Alarm") }
+        }
+        Button(onClick = onRemove) { Text("Remove") }
     }
 }

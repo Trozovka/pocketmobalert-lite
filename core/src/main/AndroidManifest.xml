@@ -8,6 +8,12 @@
       permissions below are specific to this app and not part of that shared module, since no
       prior portfolio app used BLE peripheral/central mode.
     -->
+    <!-- Legacy Bluetooth permissions, required for any Bluetooth API call at all on Android <=11
+         (API <=30): normal protection level, auto-granted at install, no runtime prompt.
+         Superseded by the three runtime permissions below on API 31+, hence maxSdkVersion. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation"
         tools:targetApi="31" />
