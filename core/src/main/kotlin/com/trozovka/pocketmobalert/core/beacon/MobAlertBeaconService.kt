@@ -3,6 +3,7 @@ package com.trozovka.pocketmobalert.core.beacon
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.AdvertiseCallback
@@ -16,6 +17,7 @@ import android.os.IBinder
 import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.trozovka.pocketmobalert.core.MainActivity
 import com.trozovka.pocketmobalert.core.R
 import com.trozovka.pocketmobalert.core.ble.BleConstants
 import com.trozovka.pocketmobalert.core.ble.BlePermissions
@@ -159,11 +161,19 @@ class MobAlertBeaconService : Service() {
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
 
+        val openAppIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java).setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
         val notification: Notification = NotificationCompat.Builder(this, BleConstants.NOTIFICATION_CHANNEL_ID)
             .setContentTitle("PocketMOBAlert -- Crew mode active")
             .setContentText("Broadcasting to nearby Watch-mode devices -- no network involved")
             .setSmallIcon(R.drawable.ic_notification)
             .setOngoing(true)
+            .setContentIntent(openAppIntent)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
 

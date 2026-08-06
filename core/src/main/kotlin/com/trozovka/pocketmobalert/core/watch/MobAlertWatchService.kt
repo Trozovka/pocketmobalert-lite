@@ -3,6 +3,7 @@ package com.trozovka.pocketmobalert.core.watch
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.AdvertiseCallback
@@ -21,6 +22,7 @@ import android.os.IBinder
 import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.trozovka.pocketmobalert.core.MainActivity
 import com.trozovka.pocketmobalert.core.R
 import com.trozovka.pocketmobalert.core.ble.BleConstants
 import com.trozovka.pocketmobalert.core.ble.BlePermissions
@@ -123,7 +125,16 @@ class MobAlertWatchService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_ACKNOWLEDGE -> {
-                intent.getStringExtra(EXTRA_DEVICE_ID)?.let { separationMonitor.acknowledge(it) }
+                intent.getStringExtra(EXTRA_DEVICE_ID)?.let {
+                    separationMonitor.acknowledge(it)
+                    // Without this, only the first-ever Alarming edge for a given paired device
+                    // gets written to the alert log for the lifetime of this service instance --
+                    // the sound/vibrate/relay still correctly re-fire on every real re-separation,
+                    // but silently stop being logged after the first one. Real bug, caught by
+                    // directly inspecting the on-device DB after a real two-phone soak test: the
+                    // sound was audibly confirmed firing repeatedly, but the log stayed frozen.
+                    loggedDeviceIds -= it
+                }
                 return START_STICKY
             }
             ACTION_ACKNOWLEDGE_RELAY -> {
@@ -295,11 +306,23 @@ class MobAlertWatchService : Service() {
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
 
+        // Tapping the notification must reopen the app -- a foreground service correctly
+        // survives the app being swiped away from Recents (a safety alarm must not silently stop
+        // just because of an accidental swipe), but that means the notification is the only way
+        // back in to see status or acknowledge an alarm once the UI is gone.
+        val openAppIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java).setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
         val notification: Notification = NotificationCompat.Builder(this, BleConstants.NOTIFICATION_CHANNEL_ID)
             .setContentTitle("PocketMOBAlert -- Watch mode active")
             .setContentText("Monitoring paired crew devices -- no network involved")
             .setSmallIcon(R.drawable.ic_notification)
             .setOngoing(true)
+            .setContentIntent(openAppIntent)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
 

@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
@@ -205,21 +206,31 @@ private fun WatchModeScreen(
             }
         }
 
-        Text("Nearby crew beacons not yet paired:")
-        if (atCapacity) {
-            Text("Free tier limit reached (${maxCrewDevices} paired devices) -- Pro removes this cap.")
-        }
-        LazyColumn {
-            items(unpairedSightings.values.toList()) { sighting ->
-                Column {
-                    Text("${sighting.deviceIdHex}  (${sighting.rssi} dBm)")
-                    Button(
-                        enabled = !atCapacity,
-                        onClick = {
-                            pairedCrewStore.add(sighting.deviceIdHex, "Crew ${pairedDevices.size + 1}")
-                            pairedDevices = pairedCrewStore.getAll()
-                        },
-                    ) { Text("Add Crew") }
+        // Discovery/pairing UI only matters before you've paired your person -- this app is for
+        // a specific small number of people watching each other's backs (typically just one),
+        // not a roster to keep browsing once you're already set up.
+        var pendingNames by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+        if (pairedDevices.isEmpty()) {
+            Text("Nearby crew beacons not yet paired:")
+            LazyColumn {
+                items(unpairedSightings.values.toList()) { sighting ->
+                    Column {
+                        Text("${sighting.deviceIdHex}  (${sighting.rssi} dBm)")
+                        OutlinedTextField(
+                            value = pendingNames[sighting.deviceIdHex] ?: "",
+                            onValueChange = { pendingNames = pendingNames + (sighting.deviceIdHex to it) },
+                            label = { Text("Name (e.g. Chief Engineer)") },
+                        )
+                        val typedName = pendingNames[sighting.deviceIdHex]?.trim().orEmpty()
+                        Button(
+                            enabled = !atCapacity && typedName.isNotEmpty(),
+                            onClick = {
+                                pairedCrewStore.add(sighting.deviceIdHex, typedName)
+                                pairedDevices = pairedCrewStore.getAll()
+                                pendingNames = pendingNames - sighting.deviceIdHex
+                            },
+                        ) { Text("Add Crew") }
+                    }
                 }
             }
         }
