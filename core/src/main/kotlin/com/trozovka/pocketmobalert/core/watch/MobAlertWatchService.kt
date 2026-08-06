@@ -29,6 +29,10 @@ import com.trozovka.pocketmobalert.core.ble.BlePermissions
 import com.trozovka.pocketmobalert.core.ble.CrewDeviceIdentity
 import com.trozovka.pocketmobalert.core.data.AlertLogEntity
 import com.trozovka.pocketmobalert.core.data.PocketMobAlertDatabase
+import com.trozovka.pocketmobalert.core.entitlement.EntitlementManager
+import com.trozovka.pocketmobalert.core.entitlement.EntitlementManagerHolder
+import com.trozovka.pocketmobalert.core.opencpn.OpenCpnSettings
+import com.trozovka.pocketmobalert.core.opencpn.WplSender
 import com.trozovka.toolkit.reliability.WakeLockController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -58,8 +62,9 @@ data class CrewSighting(val deviceIdHex: String, val rssi: Int, val lastSeenMill
  * - Captures a last-known GPS position and logs the event locally the moment a device first
  *   enters Alarming (edge-triggered, not once per evaluation tick).
  *
- * No network involved anywhere in this class (non-negotiable #1) -- detection and alerting are
- * pure local BLE, no internet needed or used.
+ * Detection and the core alarm are pure local BLE, no internet needed or used (non-negotiable
+ * #1) -- the one optional exception is the Pro-only OpenCPN $WPL broadcast (local network only,
+ * never internet, never blocks or gates the alarm itself either way).
  */
 class MobAlertWatchService : Service() {
 
@@ -69,6 +74,8 @@ class MobAlertWatchService : Service() {
     private lateinit var pairedCrewStore: PairedCrewStore
     private lateinit var alarmSound: AlarmSoundController
     private lateinit var ownDeviceIdHex: String
+    private lateinit var entitlementManager: EntitlementManager
+    private lateinit var openCpnSettings: OpenCpnSettings
     private var scanner: BluetoothLeScanner? = null
     private var relayAdvertiser: BluetoothLeAdvertiser? = null
     private var isRelayAdvertising = false
@@ -120,6 +127,8 @@ class MobAlertWatchService : Service() {
         pairedCrewStore = PairedCrewStore(applicationContext)
         alarmSound = AlarmSoundController(applicationContext)
         ownDeviceIdHex = CrewDeviceIdentity.getOrCreateHex(applicationContext)
+        entitlementManager = (application as EntitlementManagerHolder).entitlementManager
+        openCpnSettings = OpenCpnSettings(applicationContext)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -220,6 +229,11 @@ class MobAlertWatchService : Service() {
 
     private suspend fun logAlarm(deviceIdHex: String, label: String) {
         val position = captureLastKnownLocation(applicationContext)
+
+        if (position != null && entitlementManager.isOpenCpnIntegrationUnlocked() && openCpnSettings.isEnabled) {
+            WplSender.send(position.first, position.second, "MOB", openCpnSettings.port)
+        }
+
         val dao = PocketMobAlertDatabase.getInstance(applicationContext).alertLogDao()
         dao.insert(
             AlertLogEntity(

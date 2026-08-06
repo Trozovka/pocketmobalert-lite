@@ -14,6 +14,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -34,6 +35,7 @@ import com.trozovka.pocketmobalert.core.data.AlertLogEntity
 import com.trozovka.pocketmobalert.core.data.PocketMobAlertDatabase
 import com.trozovka.pocketmobalert.core.entitlement.EntitlementManager
 import com.trozovka.pocketmobalert.core.entitlement.EntitlementManagerHolder
+import com.trozovka.pocketmobalert.core.opencpn.OpenCpnSettings
 import com.trozovka.pocketmobalert.core.watch.DeviceAlarmState
 import com.trozovka.pocketmobalert.core.watch.MobAlertWatchService
 import com.trozovka.pocketmobalert.core.watch.PairedCrewStore
@@ -166,12 +168,15 @@ private fun WatchModeScreen(
     var pairedDevices by remember { mutableStateOf(pairedCrewStore.getAll()) }
     var maxCrewDevices by remember { mutableStateOf<Int?>(null) }
     var historyUnlocked by remember { mutableStateOf(false) }
+    var openCpnUnlocked by remember { mutableStateOf(false) }
     var alertLog by remember { mutableStateOf<List<AlertLogEntity>>(emptyList()) }
     val context = LocalContext.current
+    val openCpnSettings = remember { OpenCpnSettings(context) }
     LaunchedEffect(alarmStates) {
         pairedDevices = pairedCrewStore.getAll()
         maxCrewDevices = entitlementManager.maxPairedCrewDevices()
         historyUnlocked = entitlementManager.isHistoryAndExportUnlocked()
+        openCpnUnlocked = entitlementManager.isOpenCpnIntegrationUnlocked()
         val dao = PocketMobAlertDatabase.getInstance(context).alertLogDao()
         alertLog = if (historyUnlocked) dao.getAll() else listOfNotNull(dao.getMostRecent())
     }
@@ -247,6 +252,40 @@ private fun WatchModeScreen(
                 Text("${entry.crewLabel} -- $timestamp -- $position")
             }
         }
+
+        if (openCpnUnlocked) {
+            OpenCpnSettingsSection(openCpnSettings)
+        }
+    }
+}
+
+@Composable
+private fun OpenCpnSettingsSection(settings: OpenCpnSettings) {
+    var enabled by remember { mutableStateOf(settings.isEnabled) }
+    var portText by remember { mutableStateOf(settings.port.toString()) }
+
+    Column {
+        Text("OpenCPN bonus: broadcast a \$WPL \"MOB\" waypoint on the local network when an " +
+            "alarm fires. This only places a marked waypoint -- it does NOT trigger OpenCPN's " +
+            "own MOB alarm/tracking mode.")
+        Column {
+            Text("Send to OpenCPN")
+            Switch(
+                checked = enabled,
+                onCheckedChange = {
+                    enabled = it
+                    settings.isEnabled = it
+                },
+            )
+        }
+        OutlinedTextField(
+            value = portText,
+            onValueChange = { text ->
+                portText = text
+                text.toIntOrNull()?.let { settings.port = it }
+            },
+            label = { Text("OpenCPN UDP port (must match its network-connection settings)") },
+        )
     }
 }
 
