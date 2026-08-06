@@ -25,6 +25,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -42,6 +43,7 @@ import com.trozovka.pocketmobalert.core.watch.PairedCrewStore
 import com.trozovka.toolkit.reliability.LocationReliabilityPermissionFlow
 import java.text.DateFormat
 import java.util.Date
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -118,6 +120,7 @@ private fun AppTabs(
     var selectedTab by remember { mutableIntStateOf(0) }
 
     Column {
+        LicenseSection(entitlementManager)
         TabRow(selectedTabIndex = selectedTab) {
             Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }, text = { Text("Crew Mode") })
             Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }, text = { Text("Watch Mode") })
@@ -129,6 +132,37 @@ private fun AppTabs(
                 pairedCrewStore, entitlementManager,
             )
         }
+    }
+}
+
+@Composable
+private fun LicenseSection(entitlementManager: EntitlementManager) {
+    // Free tier has no license concept at all -- entitlementManager.licenseStatusMessage()
+    // returns null and this section renders nothing, rather than an empty/irrelevant box.
+    var statusMessage by remember { mutableStateOf<String?>(null) }
+    var keyOverride by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        statusMessage = entitlementManager.licenseStatusMessage()
+    }
+
+    val message = statusMessage ?: return
+    val keyText = keyOverride ?: entitlementManager.getLicenseKeyInput()
+
+    Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)) {
+        Text("License: $message")
+        OutlinedTextField(
+            value = keyText,
+            onValueChange = { keyOverride = it },
+            label = { Text("Gumroad license key") },
+        )
+        Button(onClick = {
+            scope.launch {
+                entitlementManager.setLicenseKeyAndVerify(keyText)
+                statusMessage = entitlementManager.licenseStatusMessage()
+            }
+        }) { Text("Activate") }
     }
 }
 
@@ -262,7 +296,13 @@ private fun WatchModeScreen(
 @Composable
 private fun OpenCpnSettingsSection(settings: OpenCpnSettings) {
     var enabled by remember { mutableStateOf(settings.isEnabled) }
-    var portText by remember { mutableStateOf(settings.port.toString()) }
+    // Not a plain `remember { mutableStateOf(settings.port.toString()) }` -- that reads the
+    // persisted value only once at first composition, and this composable can leave/re-enter
+    // composition (e.g. switching tabs away and back) before the entitlement check that gates it
+    // resolves, discarding that remembered value. Falling back to the live persisted value
+    // whenever there's no in-progress edit means the field is never stuck blank.
+    var portOverride by remember { mutableStateOf<String?>(null) }
+    val portText = portOverride ?: settings.port.toString()
 
     Column {
         Text("OpenCPN bonus: broadcast a \$WPL \"MOB\" waypoint on the local network when an " +
@@ -281,7 +321,7 @@ private fun OpenCpnSettingsSection(settings: OpenCpnSettings) {
         OutlinedTextField(
             value = portText,
             onValueChange = { text ->
-                portText = text
+                portOverride = text
                 text.toIntOrNull()?.let { settings.port = it }
             },
             label = { Text("OpenCPN UDP port (must match its network-connection settings)") },

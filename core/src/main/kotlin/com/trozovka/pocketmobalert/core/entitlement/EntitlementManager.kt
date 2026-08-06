@@ -14,6 +14,17 @@ interface EntitlementManager {
     suspend fun isHistoryAndExportUnlocked(): Boolean
 
     suspend fun isOpenCpnIntegrationUnlocked(): Boolean
+
+    /** Null means this tier has no license concept at all (Free) -- the UI hides the license
+     * section entirely rather than showing an empty/irrelevant one. */
+    suspend fun licenseStatusMessage(): String?
+
+    /** The currently-entered license key, if any (for prefilling the UI field). */
+    fun getLicenseKeyInput(): String = ""
+
+    /** Stores [key] and immediately attempts to verify it. No-op for tiers with no license
+     * concept. */
+    suspend fun setLicenseKeyAndVerify(key: String) {}
 }
 
 class FreeEntitlementManager : EntitlementManager {
@@ -22,6 +33,8 @@ class FreeEntitlementManager : EntitlementManager {
     override suspend fun isHistoryAndExportUnlocked(): Boolean = false
 
     override suspend fun isOpenCpnIntegrationUnlocked(): Boolean = false
+
+    override suspend fun licenseStatusMessage(): String? = null
 
     companion object {
         const val FREE_CREW_DEVICE_CAP = 2
