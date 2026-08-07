@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -172,7 +174,7 @@ private fun CrewModeScreen(onStartCrewMode: () -> Unit, onStopCrewMode: () -> Un
     val deviceId by MobAlertBeaconService.deviceIdHex.collectAsState()
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
+        modifier = Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text("Crew mode: $status")
@@ -219,7 +221,15 @@ private fun WatchModeScreen(
     val unpairedSightings = sightings.filterKeys { it !in pairedIds }
     val atCapacity = maxCrewDevices?.let { pairedDevices.size >= it } ?: false
 
-    Column(modifier = Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    // verticalScroll matters here specifically: this screen's content grows dynamically (paired
+    // devices, alert log entries, an active alarm's extra Acknowledge button) and can genuinely
+    // overflow the screen height -- without scroll support, content below the fold (e.g. the
+    // OpenCPN section) becomes completely unreachable, not just visually cut off. Caught during
+    // manual on-device testing, not by inspection.
+    Column(
+        modifier = Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
         Button(onClick = onStartWatchMode) { Text("Start Watch Mode") }
         Button(onClick = onStopWatchMode) { Text("Stop Watch Mode") }
         scanError?.let { Text("Error: $it") }
