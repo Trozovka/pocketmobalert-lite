@@ -8,8 +8,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -240,8 +238,12 @@ private fun WatchModeScreen(
         }
 
         Text("Paired crew (${pairedDevices.size}${maxCrewDevices?.let { "/$it" } ?: ""}):")
-        LazyColumn {
-            items(pairedDevices) { device ->
+        // Plain Column, not LazyColumn: this list is always small (free tier caps at 2, Pro
+        // realistically a handful) and the whole screen is already one verticalScroll Column --
+        // nesting a LazyColumn inside a scrolling Column crashes at runtime (infinite height
+        // measurement constraint), caught by a real crash on-device, not by inspection.
+        Column {
+            pairedDevices.forEach { device ->
                 val state = alarmStates[device.deviceIdHex] ?: DeviceAlarmState.Present
                 PairedDeviceRow(
                     label = device.label,
@@ -261,8 +263,8 @@ private fun WatchModeScreen(
         var pendingNames by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
         if (pairedDevices.isEmpty()) {
             Text("Nearby crew beacons not yet paired:")
-            LazyColumn {
-                items(unpairedSightings.values.toList()) { sighting ->
+            Column {
+                unpairedSightings.values.forEach { sighting ->
                     Column {
                         Text("${sighting.deviceIdHex}  (${sighting.rssi} dBm)")
                         OutlinedTextField(
@@ -285,8 +287,8 @@ private fun WatchModeScreen(
         }
 
         Text(if (historyUnlocked) "Alert log:" else "Most recent alert (Pro unlocks full history):")
-        LazyColumn {
-            items(alertLog) { entry ->
+        Column {
+            alertLog.forEach { entry ->
                 val timestamp = DateFormat.getDateTimeInstance().format(Date(entry.timestampMillis))
                 val position = if (entry.latitude != null && entry.longitude != null) {
                     "%.5f, %.5f".format(entry.latitude, entry.longitude)
