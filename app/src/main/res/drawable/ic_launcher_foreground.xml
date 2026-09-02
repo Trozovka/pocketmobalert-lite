@@ -13,14 +13,14 @@
         <path
             android:fillColor="#FFFFFF"
             android:fillType="evenOdd"
-            android:pathData="M3,12a9,9 0 1,0 18,0a9,9 0 1,0 -18,0z
-                M7.5,12a4.5,4.5 0 1,0 9,0a4.5,4.5 0 1,0 -9,0z" />
-        <!-- Life ring cross-bands (top/bottom/left/right), classic lifebuoy marking -->
+            android:pathData="M12,3C7.03,3 3,7.03 3,12s4.97,9 9,9 9,-4.97 9,-9S16.97,3 12,3z
+                M12,7.5C9.515,7.5 7.5,9.515 7.5,12s2.485,4.5 4.5,4.5 4.5,-2.485 4.5,-4.5S14.485,7.5 12,7.5z" />
+        <!-- Rope-handle tabs protruding from the ring's outer edge (top/bottom/left/right) -->
         <path
             android:fillColor="#FFFFFF"
-            android:pathData="M10.8,3h2.4v4.5h-2.4z
-                M10.8,16.5h2.4v4.5h-2.4z
-                M3,10.8h4.5v2.4h-4.5z
-                M16.5,10.8h4.5v2.4h-4.5z" />
+            android:pathData="M10.8,1h2.4v2h-2.4z
+                M10.8,21h2.4v2h-2.4z
+                M1,10.8h2v2.4h-2z
+                M21,10.8h2v2.4h-2z" />
     </group>
 </vector>
