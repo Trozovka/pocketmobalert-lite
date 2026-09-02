@@ -118,8 +118,21 @@ private fun AppTabs(
     entitlementManager: EntitlementManager,
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
+    val context = LocalContext.current
+    val appLabel = remember { context.packageManager.getApplicationLabel(context.applicationInfo).toString() }
+    val versionName = remember {
+        try {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        } catch (e: Exception) {
+            null
+        }
+    }
 
     Column {
+        Text(
+            "$appLabel v${versionName ?: "?"} — developed by Trozovka",
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+        )
         LicenseSection(entitlementManager)
         TabRow(selectedTabIndex = selectedTab) {
             Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }, text = { Text("Crew Mode") })
