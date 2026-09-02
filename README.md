@@ -96,7 +96,7 @@ both, plus adds the optional OpenCPN chart integration.
 
 ## Pro version
 
-A Pro version with unlimited paired crew, full alert history/export, and an optional OpenCPN
+A Pro version with unlimited paired crew, full alert history, and an optional OpenCPN
 `$WPL` waypoint integration (one-time purchase) is available separately:
 **[trozovka.gumroad.com/l/pocket-mob-alert-pro](https://trozovka.gumroad.com/l/pocket-mob-alert-pro)**.
 The Pro app's source is private; this Free repo has the full free-tier source, openly available
