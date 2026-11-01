@@ -18,7 +18,7 @@ protecting one more crew member is zero, since everyone already owns a phone.
 local Bluetooth -- Lite's own manifest doesn't even request the `INTERNET` permission. The deck of
 a boat underway typically has no signal; that's completely irrelevant to whether this app works.
 
-Developed by **John Winsome Munar** ([Trozovka](https://github.com/Trozovka) on GitHub).
+Developed by **[Trozovka](https://github.com/Trozovka) (John Winsome Munar)**.
 
 ## Screenshots
 
@@ -106,5 +106,5 @@ under the MIT license below.
 
 MIT -- see [LICENSE](LICENSE) for the full text.
 
-Copyright (c) 2026 John Winsome Munar (Trozovka). Original Author: John Winsome Munar (Trozovka). All derivative works must retain the
+Copyright (c) 2026 Trozovka (John Winsome Munar). Original Author: Trozovka (John Winsome Munar). All derivative works must retain the
 [NOTICE](NOTICE) file's attribution. Not a fork of, or derived from, any other project's source.
